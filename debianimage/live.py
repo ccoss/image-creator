@@ -28,9 +28,7 @@ from imgcreate.errors import *
 from imgcreate.fs import *
 from imgcreate.creator import *
 
-from debianimage.aptinst import *
-
-class DebLiveImageCreatorBase(LoopImageCreator):
+class DebLiveImageCreatorBase(LiveImageCreatorBase):
     """A base class for LiveCD image creators.
 
     This class serves as a base class for the architecture-specific LiveCD
@@ -40,95 +38,6 @@ class DebLiveImageCreatorBase(LoopImageCreator):
     bootloader, bootloader configuration, kernel and initramfs.
 
     """
-
-    def __init__(self, ks, name, fslabel=None, releasever=None, tmpdir="/tmp",
-                 title="Linux", product="Linux"):
-        """Initialise a LiveImageCreator instance.
-
-        This method takes the same arguments as LoopImageCreator.__init__().
-
-        """
-        LoopImageCreator.__init__(self, ks, name,
-                                  fslabel=fslabel,
-                                  releasever=releasever,
-                                  tmpdir=tmpdir)
-
-        self.compress_type = "xz"
-        """mksquashfs compressor to use."""
-
-        self.skip_compression = False
-        """Controls whether to use squashfs to compress the image."""
-
-        self.skip_minimize = False
-        """Controls whether an image minimizing snapshot should be created.
-
-        This snapshot can be used when copying the system image from the ISO in
-        order to minimize the amount of data that needs to be copied; simply,
-        it makes it possible to create a version of the image's filesystem with
-        no spare space.
-
-        """
-
-        self._timeout = kickstart.get_timeout(self.ks, 10)
-        """The bootloader timeout from kickstart."""
-
-        self._default_kernel = kickstart.get_default_kernel(self.ks, "kernel")
-        """The default kernel type from kickstart."""
-
-        self.__isodir = None
-
-        self.__modules = ["=ata", "sym53c8xx", "aic7xxx", "=usb", "=firewire",
-                          "=mmc", "=pcmcia", "mptsas", "udf", "virtio_blk",
-                          "virtio_pci"]
-        self.__modules.extend(kickstart.get_modules(self.ks))
-
-        self._isofstype = "iso9660"
-        self.base_on = False
-
-        self.title = title
-        self.product = product
-
-    #
-    # Hooks for subclasses
-    #
-    def _configure_bootloader(self, isodir):
-        """Create the architecture specific booloader configuration.
-
-        This is the hook where subclasses must create the booloader
-        configuration in order to allow a bootable ISO to be built.
-
-        isodir -- the directory where the contents of the ISO are to be staged
-
-        """
-        raise CreatorError("Bootloader configuration is arch-specific, "
-                           "but not implemented for this arch!")
-
-    def _get_kernel_options(self):
-        """Return a kernel options string for bootloader configuration.
-
-        This is the hook where subclasses may specify a set of kernel options
-        which should be included in the images bootloader configuration.
-
-        A sensible default implementation is provided.
-
-        """
-        r = kickstart.get_kernel_args(self.ks)
-        if os.path.exists(self._instroot + "/usr/bin/rhgb"):
-            r += " rhgb"
-        if os.path.exists(self._instroot + "/usr/bin/plymouth"):
-            r += " rhgb"
-        return r
-        
-    def _get_mkisofs_options(self, isodir):
-        """Return the architecture specific mkisosfs options.
-
-        This is the hook where subclasses may specify additional arguments to
-        mkisofs, e.g. to enable a bootable ISO to be built.
-
-        By default, an empty list is returned.
-
-        """
-        return []
 
     #
     # Helpers for subclasses
@@ -241,25 +150,6 @@ class DebLiveImageCreatorBase(LoopImageCreator):
 
         return env
 
-    def __extra_filesystems(self):
-        return "squashfs ext4 ext3 ext2 vfat msdos ";
-
-    def __extra_drivers(self):
-        retval = "sr_mod sd_mod ide-cd cdrom "
-        for module in self.__modules:
-            if module == "=usb":
-                retval = retval + "ehci_hcd uhci_hcd ohci_hcd "
-                retval = retval + "usb_storage usbhid "
-            elif module == "=firewire":
-                retval = retval + "firewire-sbp2 firewire-ohci "
-                retval = retval + "sbp2 ohci1394 ieee1394 "
-            elif module == "=mmc":
-                retval = retval + "mmc_block sdhci sdhci-pci "
-            elif module == "=pcmcia":
-                retval = retval + "pata_pcmcia "
-            else:
-                retval = retval + module + " "
-        return retval
 
     def __restore_file(self,path):
         try:
@@ -356,7 +246,7 @@ class DebLiveImageCreatorBase(LoopImageCreator):
             shutil.rmtree(self.__isodir, ignore_errors = True)
             self.__isodir = None
 
-class x86DebLiveImageCreator(DebLiveImageCreatorBase):
+class x86debLiveImageCreator(DebLiveImageCreatorBase):
     """ImageCreator for x86 machines"""
     def _get_mkisofs_options(self, isodir):
         return [ "-b", "isolinux/isolinux.bin",
@@ -365,7 +255,7 @@ class x86DebLiveImageCreator(DebLiveImageCreatorBase):
                  "-boot-load-size", "4" ]
 
     def _get_required_packages(self):
-        return ["syslinux"] + DebLiveImageCreatorBase._get_required_packages(self)
+        return ["syslinux"] + LiveImageCreatorBase._get_required_packages(self)
 
     def _get_isolinux_stanzas(self, isodir):
         return ""
@@ -945,7 +835,6 @@ image=/ppc/ppc32/vmlinuz
             self.__write_dualbits_yaboot_config(isodir,
                                                 name = self.name,
                                                 timeout = self._timeout * 100)
-
 
 
 arch = 

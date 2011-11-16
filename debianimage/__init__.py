@@ -17,8 +17,9 @@
 # Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
 
 from debianimage.live import *
-from debianimage.creator import *
-from debianimage.yuminst import *
+from debianimage.appliance import *
+from debianimage.installer import *
+from debianimage.aptinst import *
 from debianimage.kickstart import *
 from debianimage.fs import *
 from debianimage.debug import *
