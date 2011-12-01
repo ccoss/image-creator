@@ -26,7 +26,9 @@ import re
 
 from imgcreate.errors import *
 from imgcreate.fs import *
-from imgcreate.creator import *
+from imgcreate.live import *
+from debianimage.aptinst import *
+from debianimage import kickstart
 
 class DebLiveImageCreatorBase(LiveImageCreatorBase):
     """A base class for LiveCD image creators.
@@ -39,98 +41,184 @@ class DebLiveImageCreatorBase(LiveImageCreatorBase):
 
     """
 
-    #
-    # Helpers for subclasses
-    #
-    def _has_checkisomd5(self):
-        """Check whether checkisomd5 is available in the install root."""
-        def exists(instroot, path):
-            return os.path.exists(instroot + path)
+    def __init__(self, ks, name, fslabel=None, releasever=None, tmpdir="/tmp",
+                 title="Linux", product="Linux"):
+        """Initialise a LiveImageCreator instance.
 
-        if (exists(self._instroot, "/usr/lib/anaconda-runtime/checkisomd5") or
-            exists(self._instroot, "/usr/bin/checkisomd5")):
-            return True
+        This method takes the same arguments as LoopImageCreator.__init__().
 
-        return False
+        """
+        LoopImageCreator.__init__(self, ks, name,
+                                  fslabel=fslabel,
+                                  releasever=releasever,
+                                  tmpdir=tmpdir)
 
-    #
-    # Actual implementation
-    #
-    def _base_on(self, base_on):
-        """helper function to extract ext3 file system from a live CD ISO"""
-        isoloop = DiskMount(LoopbackDisk(base_on, 0), self._mkdtemp())
+        self.compress_type = "xz"
+        """mksquashfs compressor to use."""
 
-        try:
-            isoloop.mount()
-        except MountError, e:
-            raise CreatorError("Failed to loopback mount '%s' : %s" %
-                               (base_on, e))
+        self.skip_compression = False
+        """Controls whether to use squashfs to compress the image."""
 
-        # Copy the initrd%d.img and xen%d.gz files over to /isolinux
-        # This is because the originals in /boot are removed when the
-        # original .iso was created.
-        src = isoloop.mountdir + "/isolinux/"
-        dest = self.__ensure_isodir() + "/isolinux/"
-        makedirs(dest)
-        pattern = re.compile(r"(initrd\d+\.img|xen\d+\.gz)")
-        files = [f for f in os.listdir(src) if pattern.search(f)
-                                               and os.path.isfile(src+f)]
-        for f in files:
-            shutil.copyfile(src+f, dest+f)
+        self.skip_minimize = False
+        """Controls whether an image minimizing snapshot should be created.
 
-        # legacy LiveOS filesystem layout support, remove for F9 or F10
-        if os.path.exists(isoloop.mountdir + "/squashfs.img"):
-            squashimg = isoloop.mountdir + "/squashfs.img"
-        else:
-            squashimg = isoloop.mountdir + "/LiveOS/squashfs.img"
+        This snapshot can be used when copying the system image from the ISO in
+        order to minimize the amount of data that needs to be copied; simply,
+        it makes it possible to create a version of the image's filesystem with
+        no spare space.
 
-        squashloop = DiskMount(LoopbackDisk(squashimg, 0), self._mkdtemp(), "squashfs")
+        """
 
-        # 'self.compress_type = None' will force reading it from base_on.
-        if self.compress_type is None:
-            self.compress_type = squashfs_compression_type(squashimg)
-            if self.compress_type == 'undetermined':
-                # Default to 'gzip' for compatibility with older versions.
-                self.compress_type = 'gzip'
-        try:
-            if not squashloop.disk.exists():
-                raise CreatorError("'%s' is not a valid live CD ISO : "
-                                   "squashfs.img doesn't exist" % base_on)
+        self._timeout = kickstart.get_timeout(self.ks, 10)
+        """The bootloader timeout from kickstart."""
 
-            try:
-                squashloop.mount()
-            except MountError, e:
-                raise CreatorError("Failed to loopback mount squashfs.img "
-                                   "from '%s' : %s" % (base_on, e))
+        self._default_kernel = kickstart.get_default_kernel(self.ks, "kernel")
+        """The default kernel type from kickstart."""
 
-            # legacy LiveOS filesystem layout support, remove for F9 or F10
-            if os.path.exists(squashloop.mountdir + "/os.img"):
-                os_image = squashloop.mountdir + "/os.img"
+        self.__isodir = None
+
+        self.__modules = ["=ata", "sym53c8xx", "aic7xxx", "=usb", "=firewire",
+                          "=mmc", "=pcmcia", "mptsas", "udf", "virtio_blk",
+                          "virtio_pci"]
+        self.__modules.extend(kickstart.get_modules(self.ks))
+
+        self._isofstype = "iso9660"
+        self.base_on = False
+
+        self.title = title
+        self.product = product
+
+
+    def _get_kernel_versions(self):
+        import glob
+
+        ret = {}
+        kernel_files = glob.glob(self._instroot + "/boot/vmlinuz-*")
+        if len(kernel_files) > 0:
+            ret['vmlinuz'] = []
+            for f in kernel_files:
+                ret['vmlinuz'].append(f.split("vmlinuz-")[1])
+
+        kernel_files = glob.glob(self._instroot + "/boot/vmlinux-*")
+        if len(kernel_files) > 0:
+            ret['vmlinux'] = []
+            for f in kernel_files:
+                ret['vmlinux'].append(f.split("vmlinux-")[1])
+        
+        return ret
+           
+
+    def setArch( self, arch=None ):
+        self.arch = arch
+
+    def mount(self, base_on = None, cachedir = None):
+        """Setup the target filesystem in preparation for an install.
+
+        This function sets up the filesystem which the ImageCreator will
+        install into and configure. The ImageCreator class merely creates an
+        install root directory, bind mounts some system directories (e.g. /dev)
+        and writes out /etc/fstab. Other subclasses may also e.g. create a
+        sparse file, format it and loopback mount it to the install root.
+
+        base_on -- a previous install on which to base this install; defaults
+                   to None, causing a new image to be created
+
+        cachedir -- a directory in which to store the Yum cache; defaults to
+                    None, causing a new cache to be created; by setting this
+                    to another directory, the same cache can be reused across
+                    multiple installs.
+
+        """
+
+        self._ImageCreator__ensure_builddir()
+
+        makedirs(self._instroot)
+        makedirs(self._outdir)
+
+        self._mount_instroot(base_on)
+
+        for d in ("/dev/pts", "/etc", "/boot", "/var/log", "/sys", "/proc"):
+            makedirs(self._instroot + d)
+
+#        cachesrc = cachedir or (self.__builddir + "/yum-cache")
+#        makedirs(cachesrc)
+
+        # bind mount system directories into _instroot
+        for (f, dest) in [("/sys", None), ("/proc", None),
+                          ("/dev/pts", None), ("/dev/shm", None)]:
+            if os.path.exists(f):
+                self._ImageCreator__bindmounts.append(BindChrootMount(f, self._instroot, dest))
             else:
-                os_image = squashloop.mountdir + "/LiveOS/ext3fs.img"
+                logging.warn("Skipping (%s,%s) because source doesn't exist." % (f, dest))
 
-            if not os.path.exists(os_image):
-                raise CreatorError("'%s' is not a valid live CD ISO : neither "
-                                   "LiveOS/ext3fs.img nor os.img exist" %
-                                   base_on)
+        self._do_bindmounts()
 
-            try:
-                shutil.copyfile(os_image, self._image)
-            except IOError, e:
-                raise CreatorError("Failed to copy base live image to %s for modification: %s" %(self._image, e))
-        finally:
-            squashloop.cleanup()
-            isoloop.cleanup()
+        self.__create_selinuxfs()
+
+        self._ImageCreator__create_minimal_dev()
+
+        os.symlink("/proc/self/mounts", self._instroot + "/etc/mtab")
+
+        self._ImageCreator__write_fstab()
+
+    def __create_selinuxfs(self):
+        pass
+
+    def __destroy_selinuxfs(self):
+        pass
+
+    def install(self, repo_urls = {}):
+        aApt = Apt()
+        aApt.setup( self._instroot, self.arch )
+        for repo in kickstart.get_repos(self.ks, repo_urls):
+            (name, baseurl, mirrorlist, proxy, inc, exc) = repo
+            aApt.addRepository( baseurl )
+        
+        for pkg in kickstart.get_packages(self.ks,
+                                          self._get_required_packages()):
+            aApt.selectPackage( pkg )
+
+        aApt.runInstall()
+
+    def configure(self):
+        """Configure the system image according to the kickstart.
+
+        This method applies the (e.g. keyboard or network) configuration
+        specified in the kickstart and executes the kickstart %post scripts.
+
+        If neccessary, it also prepares the image to be bootable by e.g.
+        creating an initrd and bootloader configuration.
+
+        """
+        ksh = self.ks.handler
+
+        kickstart.LanguageConfig(self._instroot).apply(ksh.lang)
+        kickstart.KeyboardConfig(self._instroot).apply(ksh.keyboard)
+        kickstart.TimezoneConfig(self._instroot).apply(ksh.timezone)
+        kickstart.AuthConfig(self._instroot).apply(ksh.authconfig)
+        kickstart.FirewallConfig(self._instroot).apply(ksh.firewall)
+        kickstart.RootPasswordConfig(self._instroot).apply(ksh.rootpw)
+        kickstart.ServicesConfig(self._instroot).apply(ksh.services)
+        kickstart.XConfig(self._instroot).apply(ksh.xconfig)
+        kickstart.NetworkConfig(self._instroot).apply(ksh.network)
+#        kickstart.RPMMacroConfig(self._instroot).apply(self.ks)
+
+        self._create_bootconfig()
+
+        self._ImageCreator__run_post_scripts()
+#        kickstart.SelinuxConfig(self._instroot).apply(ksh.selinux)
+
+    def _create_bootconfig(self):
+        """Configure the image so that it's bootable."""
+        self._configure_bootloader(self.__ensure_isodir())
 
     def _mount_instroot(self, base_on = None):
+#        pass
         self.base_on = True
         LoopImageCreator._mount_instroot(self, base_on)
-        self.__write_initrd_conf(self._instroot + "/etc/sysconfig/mkinitrd")
-        self.__write_dracut_conf(self._instroot + "/etc/dracut.conf")
 
     def _unmount_instroot(self):
-        self.__restore_file(self._instroot + "/etc/sysconfig/mkinitrd")
-        self.__restore_file(self._instroot + "/etc/dracut.conf")
+#        pass
         LoopImageCreator._unmount_instroot(self)
 
     def __ensure_isodir(self):
@@ -138,49 +226,40 @@ class DebLiveImageCreatorBase(LiveImageCreatorBase):
             self.__isodir = self._mkdtemp("iso-")
         return self.__isodir
 
-    def _create_bootconfig(self):
-        """Configure the image so that it's bootable."""
-        self._configure_bootloader(self.__ensure_isodir())
-
-    def _get_post_scripts_env(self, in_chroot):
-        env = LoopImageCreator._get_post_scripts_env(self, in_chroot)
-
-        if not in_chroot:
-            env["LIVE_ROOT"] = self.__ensure_isodir()
-
-        return env
-
-
-    def __restore_file(self,path):
+    def _stage_final_image(self):
         try:
-            os.unlink(path)
-        except:
-            pass
-        if os.path.exists(path + '.rpmnew'):
-            os.rename(path + '.rpmnew', path)
+            makedirs(self.__ensure_isodir() + "/live")
 
-    def __write_initrd_conf(self, path):
-        if not os.path.exists(os.path.dirname(path)):
-            makedirs(os.path.dirname(path))
-        f = open(path, "a")
-        f.write('LIVEOS="yes"\n')
-        f.write('PROBE="no"\n')
-        f.write('MODULES+="' + self.__extra_filesystems() + '"\n')
-        f.write('MODULES+="' + self.__extra_drivers() + '"\n')
-        f.close()
+            self._resparse()
 
-    def __write_dracut_conf(self, path):
-        if not os.path.exists(os.path.dirname(path)):
-            makedirs(os.path.dirname(path))
-        f = open(path, "a")
-        f.write('filesystems+="' + self.__extra_filesystems() + ' "\n')
-        f.write('drivers+="' + self.__extra_drivers() + ' "\n')
-        f.close()
+            if not self.skip_minimize:
+                pass
+
+            if self.skip_compression:
+                shutil.move(self._image, self.__isodir + "/live/filesystem.ext3")
+                if os.stat(self.__isodir + "/live/filesystem.ext3").st_size >= 4*1024*1024*1024:
+                    self._isofstype = "udf"
+                    logging.warn("Switching to UDF due to size of live/filesystem.ext3")
+            else:
+                instloop = DiskMount( LoopbackDisk(self._image,0), self._instroot)
+                instloop.mount()
+                mksquashfs(self._instroot,
+                           self.__isodir + "/live/filesystem.squashfs",
+                           self.compress_type)
+                if os.stat(self.__isodir + "/live/filesystem.squashfs").st_size >= 4*1024*1024*1024:
+                    self._isofstype = "udf"
+                    logging.warn("Switching to UDF due to size of live/filesystem.squashfs")
+                instloop.cleanup()
+
+            self.__create_iso(self.__isodir)
+        finally:
+            shutil.rmtree(self.__isodir, ignore_errors = True)
+            self.__isodir = None
 
     def __create_iso(self, isodir):
         iso = self._outdir + "/" + self.name + ".iso"
 
-        args = ["/usr/bin/mkisofs",
+        args = ["/usr/bin/genisoimage",
                 "-J", "-r",
                 "-hide-rr-moved", "-hide-joliet-trans-tbl",
                 "-V", self.fslabel,
@@ -198,55 +277,10 @@ class DebLiveImageCreatorBase(LiveImageCreatorBase):
         if os.path.exists("/usr/bin/isohybrid"):
             subprocess.call(["/usr/bin/isohybrid", iso])
 
-        self.__implant_md5sum(iso)
-
-    def __implant_md5sum(self, iso):
-        """Implant an isomd5sum."""
-        if os.path.exists("/usr/bin/implantisomd5"):
-            implantisomd5 = "/usr/bin/implantisomd5"
-        elif os.path.exists("/usr/lib/anaconda-runtime/implantisomd5"):
-            implantisomd5 = "/usr/lib/anaconda-runtime/implantisomd5"
-        else:
-            logging.warn("isomd5sum not installed; not setting up mediacheck")
-            return
-            
-        subprocess.call([implantisomd5, iso])
-
-    def _stage_final_image(self):
-        try:
-            makedirs(self.__ensure_isodir() + "/LiveOS")
-
-            self._resparse()
-
-            if not self.skip_minimize:
-                create_image_minimizer(self.__isodir + "/LiveOS/osmin.img",
-                                       self._image, self.compress_type,
-                                       tmpdir = self.tmpdir)
-
-            if self.skip_compression:
-                shutil.move(self._image, self.__isodir + "/LiveOS/ext3fs.img")
-                if os.stat(self.__isodir + "/LiveOS/ext3fs.img").st_size >= 4*1024*1024*1024:
-                    self._isofstype = "udf"
-                    logging.warn("Switching to UDF due to size of LiveOS/ext3fs.img")
-            else:
-                makedirs(os.path.join(os.path.dirname(self._image), "LiveOS"))
-                shutil.move(self._image,
-                            os.path.join(os.path.dirname(self._image),
-                                         "LiveOS", "ext3fs.img"))
-                mksquashfs(os.path.dirname(self._image),
-                           self.__isodir + "/LiveOS/squashfs.img",
-                           self.compress_type)
-                if os.stat(self.__isodir + "/LiveOS/squashfs.img").st_size >= 4*1024*1024*1024:
-                    self._isofstype = "udf"
-                    logging.warn("Switching to UDF due to size of LiveOS/squashfs.img")
+#        self.__implant_md5sum(iso)
 
 
-            self.__create_iso(self.__isodir)
-        finally:
-            shutil.rmtree(self.__isodir, ignore_errors = True)
-            self.__isodir = None
-
-class x86debLiveImageCreator(DebLiveImageCreatorBase):
+class x86DebLiveImageCreator(DebLiveImageCreatorBase):
     """ImageCreator for x86 machines"""
     def _get_mkisofs_options(self, isodir):
         return [ "-b", "isolinux/isolinux.bin",
@@ -317,12 +351,12 @@ class x86debLiveImageCreator(DebLiveImageCreatorBase):
                         isodir + "/isolinux/vmlinuz" + index)
 
         isDracut = False
-        if os.path.exists(bootdir + "/initramfs-" + version + ".img"):
-            shutil.copyfile(bootdir + "/initramfs-" + version + ".img",
+        if os.path.exists(bootdir + "/initramfs.img-" + version):
+            shutil.copyfile(bootdir + "/initramfs.img-" + version,
                             isodir + "/isolinux/initrd" + index + ".img")
             isDracut = True
-        elif os.path.exists(bootdir + "/initrd-" + version + ".img"):
-            shutil.copyfile(bootdir + "/initrd-" + version + ".img",
+        elif os.path.exists(bootdir + "/initrd.img-" + version):
+            shutil.copyfile(bootdir + "/initrd.img-" + version ,
                             isodir + "/isolinux/initrd" + index + ".img")
         elif not self.base_on:
             logging.error("No initrd or initramfs found for %s" % (version,))
@@ -391,7 +425,7 @@ menu separator
             template = """label %(short)s
   menu label %(long)s
   kernel vmlinuz%(index)s
-  append initrd=initrd%(index)s.img root=%(rootlabel)s rootfstype=%(isofstype)s %(liveargs)s %(extra)s
+  append initrd=initrd%(index)s.img  %(liveargs)s %(extra)s
 """
         else:
             template = """label %(short)s
@@ -837,11 +871,13 @@ image=/ppc/ppc32/vmlinuz
                                                 timeout = self._timeout * 100)
 
 
-arch = 
-if arch in ("i386", "amd64"):
-    LiveImageCreator = x86DebLiveImageCreator
-elif arch in ("mipsel",):
-    LiveImageCreator = mipsDebLiveImageCreator
+def LiveImageCreator(arch):
+    if arch in ("i386", "amd64"):
+        Creator = x86DebLiveImageCreator
+    elif arch in ("mipsel",):
+        Creator = mipsDebLiveImageCreator
 
-else:
-    raise CreatorError("Architecture not supported!")
+    else:
+        raise CreatorError("Architecture not supported!")
+    
+    return Creator

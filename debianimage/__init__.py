@@ -17,12 +17,12 @@
 # Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
 
 from debianimage.live import *
-from debianimage.appliance import *
+#from debianimage.appliance import *
 from debianimage.installer import *
 from debianimage.aptinst import *
 from debianimage.kickstart import *
-from debianimage.fs import *
-from debianimage.debug import *
+#from debianimage.fs import *
+#from debianimage.debug import *
 
 """A set of classes for building Fedora system images.
 

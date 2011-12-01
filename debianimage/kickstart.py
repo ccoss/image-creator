@@ -23,12 +23,12 @@ import subprocess
 import time
 import logging
 import urlgrabber
-import selinux
+#import selinux
 
-try:
-    import system_config_keyboard.keyboard as keyboard
-except ImportError:
-    import rhpl.keyboard as keyboard
+#try:
+#    import system_config_keyboard.keyboard as keyboard
+#except ImportError:
+#    import rhpl.keyboard as keyboard
 
 import pykickstart.commands as kscommands
 import pykickstart.constants as ksconstants
@@ -131,17 +131,18 @@ class LanguageConfig(KickstartConfig):
     def apply(self, kslang):
         lang = kslang.lang or "en_US.UTF-8"
 
-        f = open(self.path("/etc/sysconfig/i18n"), "w+")
+        f = open(self.path("/etc/default/locale"), "w+")
         f.write("LANG=\"" + lang + "\"\n")
         f.close()
 
 class KeyboardConfig(KickstartConfig):
     """A class to apply a kickstart keyboard configuration to a system."""
     def apply(self, kskeyboard):
-        k = keyboard.Keyboard()
-        if kskeyboard.keyboard:
-            k.set(kskeyboard.keyboard)
-        k.write(self.instroot)
+        pass
+#        k = keyboard.Keyboard()
+#        if kskeyboard.keyboard:
+#            k.set(kskeyboard.keyboard)
+#        k.write(self.instroot)
 
 class TimezoneConfig(KickstartConfig):
     """A class to apply a kickstart timezone configuration to a system."""
@@ -149,10 +150,10 @@ class TimezoneConfig(KickstartConfig):
         tz = kstimezone.timezone or "America/New_York"
         utc = str(kstimezone.isUtc)
 
-        f = open(self.path("/etc/sysconfig/clock"), "w+")
-        f.write("ZONE=\"" + tz + "\"\n")
-        f.write("UTC=" + utc + "\n")
-        f.close()
+#        f = open(self.path("/etc/sysconfig/clock"), "w+")
+#        f.write("ZONE=\"" + tz + "\"\n")
+#        f.write("UTC=" + utc + "\n")
+#        f.close()
         try:
             shutil.copyfile(self.path("/usr/share/zoneinfo/%s" %(tz,)),
                             self.path("/etc/localtime"))
@@ -223,12 +224,12 @@ class RootPasswordConfig(KickstartConfig):
 class ServicesConfig(KickstartConfig):
     """A class to apply a kickstart services configuration to a system."""
     def apply(self, ksservices):
-        if not os.path.exists(self.path("/sbin/chkconfig")):
+        if not os.path.exists(self.path("/usr/sbin/update-rc.d")):
             return
         for s in ksservices.enabled:
-            self.call(["/sbin/chkconfig", s, "on"])
+            self.call(["/usr/sbin/update-rc.d", s, "defaults"])
         for s in ksservices.disabled:
-            self.call(["/sbin/chkconfig", s, "off"])
+            self.call(["/usr/sbin/update-rc.d", s, "remove"])
 
 class XConfig(KickstartConfig):
     """A class to apply a kickstart X configuration to a system."""
@@ -240,26 +241,15 @@ class XConfig(KickstartConfig):
             f.seek(0)
             f.write(buf)
             f.close()
-        if ksxconfig.defaultdesktop:
-            f = open(self.path("/etc/sysconfig/desktop"), "w")
-            f.write("DESKTOP="+ksxconfig.defaultdesktop+"\n")
-            f.close()
+#        if ksxconfig.defaultdesktop:
+#            f = open(self.path("/etc/sysconfig/desktop"), "w")
+#            f.write("DESKTOP="+ksxconfig.defaultdesktop+"\n")
+#            f.close()
 
 class RPMMacroConfig(KickstartConfig):
     """A class to apply the specified rpm macros to the filesystem"""
     def apply(self, ks):
-        if not ks:
-            return
-        f = open(self.path("/etc/rpm/macros.imgcreate"), "w+")
-        if exclude_docs(ks):
-            f.write("%_excludedocs 1\n")
-        if not selinux_enabled(ks):
-            f.write("%__file_context_path %{nil}\n")
-        if inst_langs(ks) != None:
-            f.write("%_install_langs ")
-            f.write(inst_langs(ks))
-            f.write("\n")
-        f.close()
+        pass
 
 class NetworkConfig(KickstartConfig):
     """A class to apply a kickstart network configuration to a system."""
@@ -365,7 +355,12 @@ class NetworkConfig(KickstartConfig):
         f.close()
 
     def apply(self, ksnet):
-        fs.makedirs(self.path("/etc/sysconfig/network-scripts"))
+        path = self.path("/etc/network/interfaces")
+        fs.makedirs( path )
+        f = file(path, "w+")
+        c = "auto lo\n"
+        c += "iface lo inet loopback\n"
+        f.write(c)
 
         useipv6 = False
         nodns = False
@@ -385,8 +380,8 @@ class NetworkConfig(KickstartConfig):
                                             "configuration for '%s'" %
                                             network.device)
 
-            self.write_ifcfg(network)
-            self.write_wepkey(network)
+#            self.write_ifcfg(network)
+#            self.write_wepkey(network)
 
             if network.ipv6:
                 useipv6 = True
@@ -401,7 +396,7 @@ class NetworkConfig(KickstartConfig):
             if network.nameserver:
                 nameservers = network.nameserver.split(",")
 
-        self.write_sysconfig(useipv6, hostname, gateway)
+#        self.write_sysconfig(useipv6, hostname, gateway)
         self.write_hosts(hostname)
         self.write_resolv(nodns, nameservers)
 
@@ -424,6 +419,7 @@ class SelinuxConfig(KickstartConfig):
         self.call(["/sbin/setfiles", "-p", "-e", "/proc", "-e", "/sys", "-e", "/dev", selinux.selinux_file_context_path(), "/"])
 
     def apply(self, ksselinux):
+        return
         if os.path.exists(self.path("/usr/sbin/lokkit")):
             args = ["/usr/sbin/lokkit", "-f", "--quiet", "--nostart"]
 

@@ -121,7 +121,17 @@ class Debootstrap(object):
 
     def downloadPackages(self, pkglist):
         for k in pkglist:
-            self.repocache[k].candidate.fetch_binary( self.rootdir + '/var/cache/apt/archives/')
+            for i in range( 1, 5 ):
+                try:
+                    self.repocache[k].candidate.fetch_binary( self.rootdir + '/var/cache/apt/archives/')
+                except apt.package.FetchError,e :
+                    if i > 5:
+                        print "Can't donwload %s in 5 times, please check network" % k
+                        raise apt.package.FetchError
+                    else:
+                        continue
+                else:
+                    break
 
     def _debExtract(self, reqpkg):
         for p in reqpkg:
@@ -251,7 +261,6 @@ class Debootstrap(object):
         self.installCore(c)
         self.installRequired( req )
         self.installBase(base)
-        self.cleanup()
 
     def installExtraPackage( self, pkgs):
         cmd = ['apt-get', '-y', '--force-yes', 'install']
@@ -279,6 +288,7 @@ class Apt(object):
         pass
 
     def _writeConf(self, arch):
+        makedirs( self.rootdir + "/etc/apt/")
         confpath = self.rootdir + '/etc/apt/apt.conf'
         conf  = "APT\n"
         conf += "{\n"
@@ -316,6 +326,6 @@ class Apt(object):
         os.environ["HOME"] = "/"
         self.installer.setup()
         self.installer.debootstrap()
-        if len(extrapkgs):
-            self.installer.installExtraPackage( extrapkgs )
+        if len(self.extrapkgs):
+            self.installer.installExtraPackage( self.extrapkgs )
         self.installer.cleanup()
