@@ -1,0 +1,167 @@
+#!/usr/bin/python -tt
+#
+# appliance-creator: Create a virtual appliance partitioned disk image
+#
+# Copyright 2007, Red Hat  Inc.
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; version 2 of the License.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Library General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+
+import os
+import sys
+import shutil
+import optparse
+import imgcreate
+import debianimage
+import logging
+
+
+class Usage(Exception):
+    def __init__(self, msg = None, no_error = False):
+        Exception.__init__(self, msg, no_error)
+
+def parse_options(args):
+    parser = optparse.OptionParser()
+    
+    appopt = optparse.OptionGroup(parser, "Appliance options",
+                                  "These options define the created Appliance.")
+    appopt.add_option("-c", "--config", type="string", dest="kscfg",
+                      help="Path to kickstart config file")
+    appopt.add_option("-n", "--name", type="string", dest="name",
+                      help="Appliance name")
+    appopt.add_option("", "--version", type="string", dest="version",
+                      help="Appliance version")
+    appopt.add_option("", "--release", type="string", dest="release",
+                      help="Appliance release")
+    #appopt.add_option("-a", "--appliance", type="string", dest="type",
+    #                  help="Appliance Type (default: generic)")    
+    #appopt.add_option("-s", "--source", type="string", dest="source",
+    #                  help="Include Source") 
+    #appopt.add_option("-l", "--list", type="string", dest="list",
+    #                  help="Generate Package List") 
+    appopt.add_option("", "--vmem", type="int", dest="vmem", default=512,
+                      help="amount of virtual memory for appliance in MB (default: 512)")
+    appopt.add_option("", "--vcpu", type="int", dest="vcpu", default=1,
+                      help="number of virtual cpus for appliance (default: 1)")
+    appopt.add_option("", "--checksum", action="store_true", dest="checksum",
+                      help=("Generate a checksum for the created appliance"))
+    appopt.add_option("-f", "--format", type="string", dest="disk_format", default="raw",
+                      help="Disk format (default: raw)")
+    parser.add_option_group(appopt)
+    
+    
+    pkgopt = optparse.OptionGroup(parser, "Package options",
+                                  "These options define the way the created Appliance is packaged.")
+    pkgopt.add_option("-p", "--package", type="string", dest="package", default="none",
+                      help="Package format (default: none)")
+    pkgopt.add_option("-i", "--include", type="string", dest="include",
+                      help="path to a file or dir to include in the appliance package")
+    pkgopt.add_option("-o", "--outdir", type="string", dest="destdir",
+                      help="output directory")
+    parser.add_option_group(pkgopt)
+    
+    
+    sysopt = optparse.OptionGroup(parser, "System directory options",
+                                  "These options define directories used on your system for creating the live image")   
+    sysopt.add_option("-t", "--tmpdir", type="string",
+                      dest="tmpdir", default="/var/tmp",
+                      help="Temporary directory to use (default: /var/tmp)")
+    sysopt.add_option("", "--cache", type="string",
+                      dest="cachedir", default=None,
+                      help="Cache directory to use (default: private cache)")
+    parser.add_option_group(sysopt)
+
+    imgcreate.setup_logging(parser)
+    
+    (options, args) = parser.parse_args()
+    
+    #check input
+    if not options.kscfg:
+        raise Usage("Kickstart config '%s' does not exist" %(options.kscfg,))
+   
+    if options.include and not os.path.isfile(options.include) and not os.path.isdir(options.include):
+        raise Usage("included file '%s' does not exist" %(options.include,))
+    
+    #if options.type != "generic" and options.type != "libvirt" and options.type != "vmware" and options.type != "ec2":
+    #    raise Usage("bad option %s, Currently only generic, libvirt vmware, and ec2" % options.type)
+    
+    if options.package != "zip" and options.package != "zip.64" and options.package != "none" and options.package != "tar" and options.package != "tar.bz2" and options.package != "tar.gz":
+        raise Usage("bad option %s, Currently only none, zip, zip.64, tar, tar.gz, and tar.bz2 are supported" % options.package)
+
+          
+    return options
+
+def main():
+    try:
+        options = parse_options(sys.argv[1:])
+    except Usage, (msg, no_error):
+        if no_error:
+            out = sys.stdout
+            ret = 0
+        else:
+            out = sys.stderr
+            ret = 2
+        if msg:
+            print >> out, msg
+        return ret
+    
+    if os.geteuid () != 0:
+        print >> sys.stderr, "You must run appliance-creator as root"
+        return 1
+
+    try:
+        ks = imgcreate.read_kickstart(options.kscfg)
+    except imgcreate.CreatorError, e:
+        logging.error("Unable to load kickstart file '%s' : %s" % (options.kscfg, e))
+        return 1
+
+    name = imgcreate.build_name(options.kscfg)
+    if options.name:
+        name = options.name
+            
+    creator = debianimage.DebApplianceImageCreator(ks, name, options.disk_format, options.vmem, options.vcpu)
+    creator.tmpdir = options.tmpdir
+    creator.checksum = options.checksum
+
+    if options.version:
+        creator.appliance_version = options.version
+    if options.release:
+        creator.appliance_release = options.release
+    #creator.getsource = options.source
+    #creator.lsitpkg = options.pkg
+    
+    destdir = "."
+    if options.destdir:
+        destdir=options.destdir   
+    
+    try:
+        creator.mount("NONE", options.cachedir)
+        creator.install()
+        creator.configure()
+        creator.unmount()
+        creator.package(destdir,options.package,options.include)    
+    except imgcreate.CreatorError, e:
+        logging.error("Unable to create appliance : %s" % e)
+        creator.cleanup()
+        return 1
+    
+    creator.cleanup()
+
+
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())
+
+
+

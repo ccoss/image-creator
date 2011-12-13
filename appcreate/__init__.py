@@ -1,5 +1,5 @@
 #
-# debianimage : Support for creating system images, including Live CDs
+# appcreate : Support for creating appliance images
 #
 # Copyright 2007, Red Hat  Inc.
 #
@@ -14,22 +14,25 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with this program; if not, write to the Free Software
-# Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+# Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA
 
-from debianimage.live import *
-from debianimage.appliance import *
-from debianimage.installer import *
-from debianimage.aptinst import *
-from debianimage.kickstart import *
-#from debianimage.fs import *
-#from debianimage.debug import *
 
-"""A set of classes for building Fedora system images.
+from imgcreate.live import *
+from imgcreate.creator import *
+from imgcreate.yuminst import *
+from imgcreate.kickstart import *
+from imgcreate.fs import *
+from imgcreate.debug import *
+from appcreate.appliance import *
+from appcreate.partitionedfs import *
+
+"""A set of classes for building Fedora applinace images.
 
 The following image creators are available:
   - ImageCreator - installs to a directory
   - LoopImageCreator - installs to an ext3 image
   - LiveImageCreator - installs to a bootable ISO
+  - ApplianceCreator - installs to one or more partitioned disk images
 
 Also exported are:
   - CreatorError - all exceptions throw are of this type
@@ -62,8 +65,10 @@ __all__ = (
     'ImageCreator',
     'LiveImageCreator',
     'LoopImageCreator',
+    'ApplianceImageCreator',
     'FSLABEL_MAXLEN',
     'read_kickstart',
     'construct_name',
     'setup_logging',
 )
+

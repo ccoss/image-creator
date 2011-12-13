@@ -28,9 +28,12 @@ import logging
 
 from imgcreate.errors import *
 from imgcreate.fs import *
-from imgcreate.creator import *
+from appcreate.appliance import *
 from appcreate.partitionedfs import *
 import urlgrabber.progress as progress
+
+from debianimage.aptinst import *
+from debianimage import kickstart
 
 class DebApplianceImageCreator(ApplianceImageCreator):
     """Installs a system into a file containing a partitioned disk image.
@@ -48,7 +51,8 @@ class DebApplianceImageCreator(ApplianceImageCreator):
         This method takes the same arguments as ImageCreator.__init__()
 
         """
-        ImageCreator.__init__(self, ks, name)
+#        ImageCreator.__init__(self, ks, name)
+        ApplianceImageCreator.__init__(self, ks, name, disk_format, vmem, vcpu)
 
         self.__instloop = None
         self.__imgdir = None
@@ -61,110 +65,117 @@ class DebApplianceImageCreator(ApplianceImageCreator):
         self.checksum = False
         self.appliance_version = None
         self.appliance_release = None
+        self.arch = None
         
         #additional modules to include   
-        self.modules = ["sym53c8xx", "aic7xxx", "mptspi"]
-        self.modules.extend(kickstart.get_modules(self.ks))
+#        self.modules = ["sym53c8xx", "aic7xxx", "mptspi"]
+#        self.modules.extend(kickstart.get_modules(self.ks))
         
+    def mount(self, base_on = None, cachedir = None):
+        """Setup the target filesystem in preparation for an install.
 
-    def _get_fstab(self):
-        s = ""
-        for mp in self.__instloop.mountOrder:
-            p = None
-            for p1 in self.__instloop.partitions:
-                if p1['mountpoint'] == mp:
-                    p = p1
-                    break
+        This function sets up the filesystem which the ImageCreator will
+        install into and configure. The ImageCreator class merely creates an
+        install root directory, bind mounts some system directories (e.g. /dev)
+        and writes out /etc/fstab. Other subclasses may also e.g. create a
+        sparse file, format it and loopback mount it to the install root.
 
-            s +=  "%(device)s  %(mountpoint)s %(fstype)s    defaults,noatime 0 0\n" %  {
-                'device': "/dev/%s%-d" % (p['disk'], p['num']),
-                'mountpoint': p['mountpoint'],
-                'fstype': p['fstype'] }
+        base_on -- a previous install on which to base this install; defaults
+                   to None, causing a new image to be created
 
-        s += "devpts     /dev/pts  devpts  gid=5,mode=620   0 0\n"
-        s += "tmpfs      /dev/shm  tmpfs   defaults         0 0\n"
-        s += "proc       /proc     proc    defaults         0 0\n"
-        s += "sysfs      /sys      sysfs   defaults         0 0\n"
-        return s
-    
+        cachedir -- a directory in which to store the Yum cache; defaults to
+                    None, causing a new cache to be created; by setting this
+                    to another directory, the same cache can be reused across
+                    multiple installs.
+
+        """
+
+        self._ImageCreator__ensure_builddir()
+
+        makedirs(self._instroot)
+        makedirs(self._outdir)
+
+        self._mount_instroot(base_on)
+
+        for d in ("/dev/pts", "/etc", "/boot", "/var/log", "/sys", "/proc"):
+            makedirs(self._instroot + d)
+
+#        cachesrc = cachedir or (self.__builddir + "/yum-cache")
+#        makedirs(cachesrc)
+
+        # bind mount system directories into _instroot
+        for (f, dest) in [("/sys", None), ("/proc", None),
+                          ("/dev/pts", None), ("/dev/shm", None)]:
+            if os.path.exists(f):
+                self._ImageCreator__bindmounts.append(BindChrootMount(f, self._instroot, dest))
+            else:
+                logging.warn("Skipping (%s,%s) because source doesn't exist." % (f, dest))
+
+        self._do_bindmounts()
+
+        self.__create_selinuxfs()
+
+        self._ImageCreator__create_minimal_dev()
+
+        os.symlink("/proc/self/mounts", self._instroot + "/etc/mtab")
+
+        self._ImageCreator__write_fstab()
+
+    def __create_selinuxfs(self):
+        pass
+
     
     def _create_mkinitrd_config(self):
         #write  to tell which modules to be included in initrd
-        
-        extramods = ""
-        for module in self.modules:
-            extramods += '%s ' % module
-            
-        mkinitrd = ""
-        mkinitrd += "PROBE=\"no\"\n"
-        mkinitrd += "MODULES=\"ext3 ata_piix sd_mod libata scsi_mod\"\n"
-        mkinitrd += "MODULES=\"%s\"\n" % extramods
-        mkinitrd += "rootfs=\"ext3\"\n"
-        mkinitrd += "rootopts=\"defaults\"\n"
-        
-        logging.debug("Writing mkinitrd config %s/etc/sysconfig/mkinitrd" % self._instroot)
-        os.makedirs(self._instroot + "/etc/sysconfig/",mode=644)
-        cfg = open(self._instroot + "/etc/sysconfig/mkinitrd", "w")
-        cfg.write(mkinitrd)
-        cfg.close()
-                       
+        pass
+
+    def setArch( self, arch=None ):
+        self.arch = arch
     
-    #
-    # Actual implementation
-    #
-    def _mount_instroot(self, base_on = None):
-        self.__imgdir = self._mkdtemp()
-        
-        #list of partitions from kickstart file
-        parts = kickstart.get_partitions(self.ks)
-        
-        #list of disks where a disk is an dict with name: and size
-        disks = []
+    def install(self, repo_urls = {}):
+        aApt = Apt()
+        aApt.setup( self._instroot, self.arch )
+        for repo in kickstart.get_repos(self.ks, repo_urls):
+            (name, baseurl, mirrorlist, proxy, inc, exc) = repo
+            aApt.addRepository( baseurl )
 
-        for i in range(len(parts)):
-            if parts[i].disk:
-                disk = parts[i].disk
-            else:
-                raise CreatorError("Failed to create disks, no --ondisk specified in partition line of ks file")
-                    
-            size =   parts[i].size * 1024L * 1024L
-            
-            if len(disks) == 0:
-                disks.append({ 'name': disk, 'size': size })
-            else:
-                found = 'false' 
-                for j in range(len(disks)):
-                    if disks[j]['name'] == disk:
-                        disks[j]['size'] = disks[j]['size'] + size
-                        found = 'true'
-                        break
-                    else: found = 'false'
-                if found == 'false':
-                    disks.append({ 'name': disk, 'size': size })    
-            
-                        
-        #create disk
-        for item in disks:
-            logging.debug("Adding disk %s as %s/%s-%s.raws" % (item['name'], self.__imgdir,self.name, item['name']))
-            disk = SparseLoopbackDisk("%s/%s-%s.raw" % (self.__imgdir,self.name, item['name']),item['size'])
-            self.__disks[item['name']] = disk
+        for pkg in kickstart.get_packages(self.ks,
+                                          self._get_required_packages()):
+            aApt.selectPackage( pkg )
 
-        self.__instloop = PartitionedMount(self.__disks,
-                                           self._instroot)
+        aApt.runInstall()
 
-        for p in parts:
-            self.__instloop.add_partition(int(p.size), p.disk, p.mountpoint, p.fstype)
+    def configure(self):
+        """Configure the system image according to the kickstart.
 
-        try:
-            self.__instloop.mount()
-        except MountError, e:
-            raise CreatorError("Failed mount disks : %s" % e)
-        
-        self._create_mkinitrd_config()
+        This method applies the (e.g. keyboard or network) configuration
+        specified in the kickstart and executes the kickstart %post scripts.
+
+        If neccessary, it also prepares the image to be bootable by e.g.
+        creating an initrd and bootloader configuration.
+
+        """
+        ksh = self.ks.handler
+
+        kickstart.LanguageConfig(self._instroot).apply(ksh.lang)
+        kickstart.KeyboardConfig(self._instroot).apply(ksh.keyboard)
+        kickstart.TimezoneConfig(self._instroot).apply(ksh.timezone)
+        kickstart.AuthConfig(self._instroot).apply(ksh.authconfig)
+        kickstart.FirewallConfig(self._instroot).apply(ksh.firewall)
+        kickstart.RootPasswordConfig(self._instroot).apply(ksh.rootpw)
+        kickstart.ServicesConfig(self._instroot).apply(ksh.services)
+        kickstart.XConfig(self._instroot).apply(ksh.xconfig)
+        kickstart.NetworkConfig(self._instroot).apply(ksh.network)
+#        kickstart.RPMMacroConfig(self._instroot).apply(self.ks)
+
+        self._create_bootconfig()
+
+        self._ImageCreator__run_post_scripts()
+#        kickstart.SelinuxConfig(self._instroot).apply(ksh.selinux)
 
 
     def _get_required_packages(self):
-        return ["grub"]
+        return ["grub-legacy"]
 
     def _create_grub_devices(self):
         devs = []
@@ -183,29 +194,10 @@ class DebApplianceImageCreator(ApplianceImageCreator):
             n += 1
 
         logging.debug("Writing grub %s/boot/grub/device.map" % self._instroot)
+        makedirs(self._instroot + "/boot/grub/")
         cfg = open(self._instroot + "/boot/grub/device.map", "w")
         cfg.write(devmap)
         cfg.close()
-
-    def _get_grub_boot_config(self):
-        bootdevnum = None
-        rootdevnum = None
-        rootdev = None
-        for p in self.__instloop.partitions:
-            if p['mountpoint'] == "/boot":
-                bootdevnum = p['num'] - 1
-            elif p['mountpoint'] == "/" and bootdevnum is None:
-                bootdevnum = p['num'] - 1
-
-            if p['mountpoint'] == "/":
-                rootdevnum = p['num'] - 1
-                rootdev = "/dev/%s%-d" % (p['disk'], p['num'])
-
-        prefix = ""
-        if bootdevnum == rootdevnum:
-            prefix = "/boot"
-
-        return (bootdevnum, rootdevnum, rootdev, prefix)
 
     def _create_grub_config(self):
         (bootdevnum, rootdevnum, rootdev, prefix) = self._get_grub_boot_config()
@@ -218,9 +210,9 @@ class DebApplianceImageCreator(ApplianceImageCreator):
         grub = ""
         grub += "default=0\n"
         grub += "timeout=5\n"
-        grub += "splashimage=(hd0,%d)%s/grub/splash.xpm.gz\n" % (bootdevnum, prefix)
+#        grub += "splashimage=(hd0,%d)%s/grub/splash.xpm.gz\n" % (bootdevnum, prefix)
         grub += "hiddenmenu\n"
-        
+
         versions = []
         kernels = self._get_kernel_versions()
         for kernel in kernels:
@@ -230,18 +222,18 @@ class DebApplianceImageCreator(ApplianceImageCreator):
         for v in versions:
             grub += "title %s (%s)\n" % (self.name, v)
             grub += "        root (hd0,%d)\n" % bootdevnum
-            grub += "        kernel %s/vmlinuz-%s ro root=%s %s\n" % (prefix, v, rootdev, options)
-            grub += "        initrd %s/initrd-%s.img\n" % (prefix, v)
+            grub += "        kernel %s/vmlinuz-%s quiet root=%s %s\n" % (prefix, v, rootdev, options)
+            grub += "        initrd %s/initrd.img-%s\n" % (prefix, v)
 
-        logging.debug("Writing grub config %s/boot/grub/grub.conf" % self._instroot)
-        cfg = open(self._instroot + "/boot/grub/grub.conf", "w")
+        logging.debug("Writing grub config %s/boot/grub/menu.lst" % self._instroot)
+        cfg = open(self._instroot + "/boot/grub/menu.lst", "w")
         cfg.write(grub)
         cfg.close()
 
     def _copy_grub_files(self):
         imgpath = None
-        for machine in ["x86_64-redhat", "i386-redhat"]:
-            imgpath = self._instroot + "/usr/share/grub/" + machine
+        for machine in ["x86_64-pc", "i386-pc"]:
+            imgpath = self._instroot + "/usr/lib/grub/" + machine
             if os.path.exists(imgpath):
                 break
 
@@ -255,246 +247,22 @@ class DebApplianceImageCreator(ApplianceImageCreator):
             logging.debug("Copying %s to %s/boot/grub/%s" %(path, self._instroot, f))
             shutil.copy(path, self._instroot + "/boot/grub/" + f)
 
-    def _install_grub(self):
-        (bootdevnum, rootdevnum, rootdev, prefix) = self._get_grub_boot_config()
 
-        # Ensure all data is flushed to disk before doing grub install
-        subprocess.call(["sync"])
+    def _get_kernel_versions(self):
+        import glob
 
-        stage2 = self._instroot + "/boot/grub/stage2"
-        setup = ""
-       
-        i = 0
-        for name in self.__disks.keys():
-            loopdev = self.__disks[name].device
-            setup += "device (hd%s) %s\n" % (i,loopdev)
-            i =i+1
-        setup += "root (hd0,%d)\n" % bootdevnum
-        setup += "setup --stage2=%s --prefix=%s/grub  (hd0)\n" % (stage2, prefix)
-        setup += "quit\n"
+        ret = {}
+        kernel_files = glob.glob(self._instroot + "/boot/vmlinuz-*")
+        if len(kernel_files) > 0:
+            ret['vmlinuz'] = []
+            for f in kernel_files:
+                ret['vmlinuz'].append(f.split("vmlinuz-")[1])
 
-        logging.debug("Installing grub to %s" % loopdev)
-        grub = subprocess.Popen(["grub", "--batch", "--no-floppy"],
-                                stdin=subprocess.PIPE)
-        grub.communicate(setup)
-        rc = grub.wait()
-        if rc != 0:
-            raise MountError("Unable to install grub bootloader")
+        kernel_files = glob.glob(self._instroot + "/boot/vmlinux-*")
+        if len(kernel_files) > 0:
+            ret['vmlinux'] = []
+            for f in kernel_files:
+                ret['vmlinux'].append(f.split("vmlinux-")[1])
 
-    def _create_bootconfig(self):
-        self._create_grub_devices()
-        self._create_grub_config()
-        self._copy_grub_files()
-        self._install_grub()
-
-    def _unmount_instroot(self):
-        if not self.__instloop is None:
-            self.__instloop.cleanup()
-
-    def _resparse(self, size = None):
-        return self.__instloop.resparse(size)
-    
-    
-    
-    def package(self, destdir,package,include):
-        """Prepares the created image for final delivery.
-           Stage
-           add includes
-           package
-        """
-        self._stage_final_image()
-        
-        #add stuff
-        if include and os.path.isdir(include):
-            logging.debug("adding everything in %s to %s" % (include,self._outdir))
-            files = glob.glob('%s/*' % include)
-            for file in files:
-                if os.path.isdir(file):
-                    logging.debug("adding dir %s to %s" % (file,os.path.join(self._outdir,os.path.basename(file))))
-                    shutil.copytree(file, os.path.join(self._outdir,os.path.basename(file)),symlinks=False)
-                else:
-                    logging.debug("adding %s to %s" % (file,self._outdir))
-                    shutil.copy(file, self._outdir)
-        elif include:
-            logging.debug("adding %s to %s" % (include,self._outdir))
-            shutil.copy(include, self._outdir)
-        
-        #package
-        (pkg, comp) = os.path.splitext(package)
-        if comp:
-            comp=comp.lstrip(".")
-        
-        if pkg == "zip":
-            dst = "%s/%s.zip" % (destdir, self.name)
-            files = glob.glob('%s/*' % self._outdir)
-            if comp == "64":
-                logging.debug("creating %s with ZIP64 extensions" %  (dst))
-                z = zipfile.ZipFile(dst, "w", compression=8, allowZip64="True")
-            else:
-                logging.debug("creating %s" %  (dst))
-                z = zipfile.ZipFile(dst, "w", compression=8, allowZip64="False")    
-            for file in files:
-                if file != dst:
-                    if os.path.isdir(file):
-                        #because zip sucks we cannot just add a dir 
-                         for root, dirs, dirfiles in os.walk(file):
-                             for dirfile in dirfiles:
-                                 arcfile=self.name+"/"+root[len(os.path.commonprefix((os.path.dirname(file), root)))+1:]+"/"+dirfile 
-                                 filepath=os.path.join(root,dirfile)
-                                 logging.debug("adding %s to %s" % (arcfile,dst))
-                                 z.write(filepath,arcfile, compress_type=None)
-                    else:
-                        logging.debug("adding %s to %s" % (os.path.join(self.name,os.path.basename(file)),dst))
-                        z.write(file, arcname=os.path.join(self.name,os.path.basename(file)), compress_type=None)
-            z.close()
-                     
-        elif pkg == "tar":
-            if comp:
-                dst = "%s/%s.tar.%s" % (destdir, self.name, comp)
-            else:
-                dst = "%s/%s.tar" % (destdir, self.name)    
-            files = glob.glob('%s/*' % self._outdir)
-            logging.debug("creating %s" %  (dst))
-            tar = tarfile.open(dst, "w|"+comp)
-            for file in files:
-                logging.debug("adding %s to %s" % (file,dst))
-                tar.add(file, arcname=os.path.join(self.name,os.path.basename(file)))
-            tar.close()
-
-               
-        else:
-            dst = os.path.join(destdir, self.name)
-            logging.debug("creating destination dir: " + dst)
-            makedirs(dst)
-            for f in os.listdir(self._outdir):
-                logging.debug("moving %s to %s" % (os.path.join(self._outdir, f), os.path.join(dst, f)))
-                shutil.move(os.path.join(self._outdir, f),os.path.join(dst, f))        
-        print "Finished"
-        
-        
-        
-    def _stage_final_image(self):
-        """Stage the final system image in _outdir.
-           Convert disks
-           write meta data
-        """
-        self._resparse()
-        
-        #if disk_format is not raw convert the disk and put in _outdir     
-        if self.__disk_format != "raw":
-            self._convert_image()
-        #else move to _outdir    
-        else:
-            logging.debug("moving disks to stage location")
-            for name in self.__disks.keys():  
-                src = "%s/%s-%s.%s" % (self.__imgdir, self.name,name, self.__disk_format)
-                dst = "%s/%s-%s.%s" % (self._outdir, self.name,name, self.__disk_format)
-                logging.debug("moving %s to %s" % (src,dst))
-                shutil.move(src,dst)
-        #write meta data in stage dir
-        self._write_image_xml()    
-
-    
-        
-    def _convert_image(self):
-        #convert disk format
-        for name in self.__disks.keys():
-            dst = "%s/%s-%s.%s" % (self._outdir, self.name,name, self.__disk_format)       
-            logging.debug("converting %s image to %s" % (self.__disks[name].lofile, dst))
-            rc = subprocess.call(["qemu-img", "convert",
-                                   "-f", "raw", self.__disks[name].lofile,
-                                   "-O", self.__disk_format,  dst])
-            if rc == 0:
-                logging.debug("convert successful")
-            if rc != 0:
-                raise CreatorError("Unable to convert disk to %s" % self.__disk_format)
-
-
-
-    def _write_image_xml(self):
-        xml = "<image>\n"
-
-        name_attributes = ""
-        if self.appliance_version:
-            name_attributes += " version='%s'" % self.appliance_version
-        if self.appliance_release:
-            name_attributes += " release='%s'" % self.appliance_release
-        xml += "  <name%s>%s</name>\n" % (name_attributes, self.name)
-        xml += "  <domain>\n"
-        # XXX don't hardcode - determine based on the kernel we installed for grub
-        # baremetal vs xen
-        xml += "    <boot type='hvm'>\n"
-        xml += "      <guest>\n"
-        xml += "        <arch>%s</arch>\n" % os.uname()[4]
-        xml += "      </guest>\n"
-        xml += "      <os>\n"
-        xml += "        <loader dev='hd'/>\n"
-        xml += "      </os>\n"
-
-        i = 0
-        for name in self.__disks.keys():
-            xml += "      <drive disk='%s-%s.%s' target='hd%s'/>\n" % (self.name,name, self.__disk_format,chr(ord('a')+i))
-            i = i + 1
-            
-        xml += "    </boot>\n"
-        xml += "    <devices>\n"
-        xml += "      <vcpu>%s</vcpu>\n" % self.vcpu 
-        xml += "      <memory>%d</memory>\n" %(self.vmem * 1024)
-        for network in self.ks.handler.network.network: 
-            xml += "      <interface/>\n"
-        xml += "      <graphics/>\n"
-        xml += "    </devices>\n"
-        xml += "  </domain>\n"
-        xml += "  <storage>\n"
-
-        if self.checksum is True:
-            for name in self.__disks.keys():
-                diskpath = "%s/%s-%s.%s" % (self._outdir,self.name,name, self.__disk_format)
-                disk_size = os.path.getsize(diskpath)
-                meter_ct = 0
-                meter = progress.TextMeter()
-                meter.start(size=disk_size, text="Generating disk signature for %s-%s.%s" % (self.name,name,self.__disk_format))
-                xml += "    <disk file='%s-%s.%s' use='system' format='%s'>\n" % (self.name,name, self.__disk_format, self.__disk_format)
-
-                try:
-                    import hashlib
-                    m1 = hashlib.sha1()
-                    m2 = hashlib.sha256()
-                except:
-                    import sha
-                    m1 = sha.new()
-                    m2 = None
-                f = open(diskpath,"r")
-                while 1:
-                    chunk = f.read(65536)
-                    if not chunk:
-                        break
-                    m1.update(chunk)
-                    if m2:
-                       m2.update(chunk)
-                    meter.update(meter_ct)
-                    meter_ct = meter_ct + 65536
-
-                sha1checksum = m1.hexdigest()
-                xml +=  """      <checksum type='sha1'>%s</checksum>\n""" % sha1checksum
-
-                if m2:
-                    sha256checksum = m2.hexdigest()
-                    xml += """      <checksum type='sha256'>%s</checksum>\n""" % sha256checksum
-                xml += "    </disk>\n"
-        else:
-            for name in self.__disks.keys():
-                xml += "    <disk file='%s-%s.%s' use='system' format='%s'/>\n" % (self.name,name, self.__disk_format, self.__disk_format)
-
-        xml += "  </storage>\n"
-        xml += "</image>\n"
-
-        logging.debug("writing image XML to %s/%s.xml" %  (self._outdir, self.name))
-        cfg = open("%s/%s.xml" % (self._outdir, self.name), "w")
-        cfg.write(xml)
-        cfg.close()
-        #print "Wrote: %s.xml" % self.name
-                
-
-
+        return ret
 

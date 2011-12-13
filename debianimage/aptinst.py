@@ -288,21 +288,22 @@ class Apt(object):
         pass
 
     def _writeConf(self, arch):
-        makedirs( self.rootdir + "/etc/apt/")
-        confpath = self.rootdir + '/etc/apt/apt.conf'
-        conf  = "APT\n"
-        conf += "{\n"
-        conf += "Architecture \"%s\";\n" % arch
-        conf += "};\n"
+        if arch:
+            makedirs( self.rootdir + "/etc/apt/")
+            confpath = self.rootdir + '/etc/apt/apt.conf'
+            conf  = "APT\n"
+            conf += "{\n"
+            conf += "Architecture \"%s\";\n" % arch
+            conf += "};\n"
 
-        f = file(confpath, "w+")
-        f.write(conf)
-        f.close()
+            f = file(confpath, "w+")
+            f.write(conf)
+            f.close()
 
-        os.chmod(confpath, 0644)
+            os.chmod(confpath, 0644)
 
 
-    def setup(self, installroot, arch):
+    def setup(self, installroot, arch=None):
         self.rootdir=installroot
         self._writeConf(arch)
         self.installer = Debootstrap(installroot)
