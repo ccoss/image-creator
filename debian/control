@@ -10,6 +10,7 @@ Vcs-Git: git://github.com/ccoss/image-creator.git
 
 Package: image-creator
 Architecture: all
-Depends: ${shlibs:Depends}, ${misc:Depends}
+Depends: ${shlibs:Depends}, ${misc:Depends}, ${python:Depends},
+         python-selinux, yum, python-rpm, python-pykickstart
 Description: <insert up to 60 chars description>
  <insert long description, indented with spaces>
