@@ -1,0 +1,15 @@
+Source: image-creator
+Section: python
+Priority: extra
+Maintainer: Suchun Chen <chensuchun@ccoss.com.cn>
+Build-Depends: debhelper (>= 7.0.50~)
+Standards-Version: 3.8.4
+Homepage: https://github.com/ccoss/image-creator
+Vcs-Git: git://github.com/ccoss/image-creator.git
+#Vcs-Browser: http://git.debian.org/?p=collab-maint/image-creator.git;a=summary
+
+Package: image-creator
+Architecture: all
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: <insert up to 60 chars description>
+ <insert long description, indented with spaces>
