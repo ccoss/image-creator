@@ -967,4 +967,5 @@ elif arch.startswith('arm'):
     LiveImageCreator = LiveImageCreatorBase
 
 else:
-    raise CreatorError("Architecture not supported!")
+    pass
+#    raise CreatorError("Architecture not supported!")

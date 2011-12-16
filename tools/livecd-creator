@@ -27,6 +27,7 @@ import logging
 #import imgcreate
 import debianimage
 #from debianimage.fs import makedirs
+import commands
 
 class Usage(Exception):
     def __init__(self, msg = None, no_error = False):
@@ -35,10 +36,14 @@ class Usage(Exception):
 def parse_options(args):
     parser = optparse.OptionParser()
 
+    status, dpkgarch = commands.getstatusoutput('dpkg --print-architecture')
+
     imgopt = optparse.OptionGroup(parser, "Image options",
                                   "These options define the created image.")
     imgopt.add_option("-c", "--config", type="string", dest="kscfg",
                       help="Path or url to kickstart config file")
+    imgopt.add_option("-a", "--arch", type="string", dest="arch",
+                      help="Arch for system",default=dpkgarch)
     imgopt.add_option("-b", "--base-on", type="string", dest="base_on",
                       help="Add packages to an existing live CD iso9660 image.")
     imgopt.add_option("-f", "--fslabel", type="string", dest="fslabel",
@@ -168,7 +173,7 @@ def main():
     ks = debianimage.read_kickstart(options.kscfg)
 
     if options.image_type == 'livecd':
-        creator = debianimage.LiveImageCreator('i386')(ks, name,
+        creator = debianimage.LiveImageCreator(options.arch)(ks, name,
                                         fslabel=fslabel,
                                         releasever=options.releasever,
                                         tmpdir=os.path.abspath(options.tmpdir),
@@ -189,7 +194,7 @@ def main():
     if options.cachedir:
         options.cachedir = os.path.abspath(options.cachedir)
 
-    creator.setArch( 'i386')
+    creator.setArch( options.arch)
 
     try:
         creator.mount(options.base_on, options.cachedir)

@@ -689,6 +689,21 @@ hiddenmenu
 
 class mipsDebLiveImageCreator(DebLiveImageCreatorBase):
 
+    def __init__(self, ks, name, fslabel=None, releasever=None, tmpdir="/tmp",
+                 title="Linux", product="Linux"):
+        """Initialise a mipsDebLiveImageCreator  instance.
+
+        This method takes the same arguments as DebLiveImageCreatorBase.__init__().
+
+        """
+        DebLiveImageCreatorBase.__init__(self, ks, name,
+                                  fslabel=fslabel,
+                                  releasever=releasever,
+                                  tmpdir=tmpdir)
+        self.__liveloop = None
+        self.__isodir = None
+
+
     def _get_required_packages(self):
         return []
 
@@ -705,18 +720,18 @@ class mipsDebLiveImageCreator(DebLiveImageCreatorBase):
 
         if os.path.exists(bootdir + "/vmlinuz-" + version):
             shutil.copyfile(bootdir + "/vmlinuz-" + version,
-                            destdir + "/vmlinuz%(index)s")
+                            destdir + "/vmlinuz" + index)
         elif os.path.exists(bootdir + "/vmlinux-" + version):
             shutil.copyfile(bootdir + "/vmlinux-" + version,
-                            destdir + "/vmlinuz%(index)s")
+                            destdir + "/vmlinuz" + index)
 
 	#gen initrd
-        initrd_cmd = ["/usr/sbin/update-initramfs","-c","-t","-k","%(version)s"]
+        initrd_cmd = ["/usr/sbin/update-initramfs","-c","-t","-k",version]
         subprocess.call(initrd_cmd, preexec_fn = self._chroot)
 
         if os.path.exists(bootdir + "initrd.img" + version):
             shutil.copyfile(bootdir + "initrd.img" + version,
-                            destdir + "initrd%(index)s.img"
+                            destdir + "initrd" + index + ".img")
         
 
     def __get_basic_pmon_config(self, **args):
@@ -742,7 +757,11 @@ title  %(long)s
 
         kernel_options = self._get_kernel_options()
 
-        versions = self._get_kernel_versions().values()
+        versions = []
+        kernels = self._get_kernel_versions()
+        for kernel in kernels:
+            for version in kernels[kernel]:
+                versions.append(version)
 
         index = "0"
         for version in versions:
@@ -751,7 +770,7 @@ title  %(long)s
             cfg += self.__get_image_stanza(fslabel = self.fslabel,
                                            isofstype = "auto",
                                            short = "linux",
-                                           long = "Kernel %(version)s",
+                                           long = "Kernel " + version,
                                            extra = "",
                                            liveargs = kernel_options,
                                            index = index)
@@ -811,7 +830,6 @@ title  %(long)s
     def _unmount_instroot(self):
 #        pass
         LoopImageCreator._unmount_instroot(self)
-        self.__unmount_isoroot()
 
     def __unmount_isoroot(self):
         if not self.__liveloop is None:
@@ -842,6 +860,7 @@ title  %(long)s
                     logging.warn("Switching to UDF due to size of live/filesystem.squashfs")
                 instloop.cleanup()
             
+            self.__unmount_isoroot()
 
         finally:
             shutil.rmtree(self.__isodir, ignore_errors = True)
