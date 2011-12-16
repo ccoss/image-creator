@@ -688,187 +688,165 @@ hiddenmenu
         self._configure_efi_bootloader(isodir)
 
 class mipsDebLiveImageCreator(DebLiveImageCreatorBase):
-    def _get_mkisofs_options(self, isodir):
-        return [ "-hfs", "-no-desktop", "-part",
-                 "-map", isodir + "/ppc/mapping",
-                 "-hfs-bless", isodir + "/ppc/mac",
-                 "-hfs-volid", self.fslabel ]
 
     def _get_required_packages(self):
-        return ["yaboot"] + \
-               LiveImageCreatorBase._get_required_packages(self)
+        return []
 
     def _get_excluded_packages(self):
         # kind of hacky, but exclude memtest86+ on ppc so it can stay in cfg
         return ["memtest86+"] + \
                LiveImageCreatorBase._get_excluded_packages(self)
 
-    def __copy_boot_file(self, destdir, file):
-        for dir in ["/usr/share/ppc64-utils",
-                    "/usr/lib/anaconda-runtime/boot"]:
-            path = self._instroot + dir + "/" + file
-            if not os.path.exists(path):
-                continue
-            
-            makedirs(destdir)
-            shutil.copy(path, destdir)
-            return
 
-        raise CreatorError("Unable to find boot file " + file)
-
-    def __kernel_bits(self, kernel):
-        testpath = (self._instroot + "/lib/modules/" +
-                    kernel + "/kernel/arch/powerpc/platforms")
-
-        if not os.path.exists(testpath):
-            return { "32" : True, "64" : False }
-        else:
-            return { "32" : False, "64" : True }
-
-    def __copy_kernel_and_initramfs(self, destdir, version):
-        isDracut = False
+    def __copy_kernel_and_initramfs(self, destdir, version, index):
         bootdir = self._instroot + "/boot"
 
         makedirs(destdir)
 
-        shutil.copyfile(bootdir + "/vmlinuz-" + version,
-                        destdir + "/vmlinuz")
+        if os.path.exists(bootdir + "/vmlinuz-" + version):
+            shutil.copyfile(bootdir + "/vmlinuz-" + version,
+                            destdir + "/vmlinuz%(index)s")
+        elif os.path.exists(bootdir + "/vmlinux-" + version):
+            shutil.copyfile(bootdir + "/vmlinux-" + version,
+                            destdir + "/vmlinuz%(index)s")
 
-        if os.path.exists(bootdir + "/initramfs-" + version + ".img"):
-            shutil.copyfile(bootdir + "/initramfs-" + version + ".img",
-                            destdir + "/initrd.img")
-            isDracut = True
-        else:
-            shutil.copyfile(bootdir + "/initrd-" + version + ".img",
-                            destdir + "/initrd.img")
+	#gen initrd
+        initrd_cmd = ["/usr/sbin/update-initramfs","-c","-t","-k","%(version)s"]
+        subprocess.call(initrd_cmd, preexec_fn = self._chroot)
 
-        return isDracut
+        if os.path.exists(bootdir + "initrd.img" + version):
+            shutil.copyfile(bootdir + "initrd.img" + version,
+                            destdir + "initrd%(index)s.img"
+        
 
-    def __get_basic_yaboot_config(self, **args):
+    def __get_basic_pmon_config(self, **args):
         return """
-init-message = "Welcome to %(name)s"
 timeout=%(timeout)d
+default 0
+showmenu 1
 """ % args
 
     def __get_image_stanza(self, **args):
-        if args["isDracut"]:
-            args["rootlabel"] = "live:LABEL=%(fslabel)s" % args
-        else:
-            args["rootlabel"] = "CDLABEL=%(fslabel)s" % args
         return """
 
-image=/ppc/ppc%(bit)s/vmlinuz
-  label=%(short)s
-  initrd=/ppc/ppc%(bit)s/initrd.img
-  read-only
-  append="root=%(rootlabel)s rootfstype=%(isofstype)s %(liveargs)s %(extra)s"
+title  %(long)s
+  kernel /dev/fs/ext2@usb0/boot/vmlinuz%(index)s
+  initrd /dev/fs/ext2@usb0/boot/initrd%(index)s.img
+  args console=tty  %(liveargs)s %(extra)s"
 """ % args
 
 
-    def __write_yaboot_config(self, isodir, bit, isDracut = False):
-        cfg = self.__get_basic_yaboot_config(name = self.name,
+    def __write_pmon_config(self, isodir):
+        cfg = self.__get_basic_pmon_config(name = self.name,
                                              timeout = self._timeout * 100)
 
         kernel_options = self._get_kernel_options()
 
-        cfg += self.__get_image_stanza(fslabel = self.fslabel,
-                                       isofstype = "auto",
-                                       short = "linux",
-                                       long = "Run from image",
-                                       extra = "",
-                                       bit = bit,
-                                       liveargs = kernel_options,
-                                       isDracut = isDracut)
+        versions = self._get_kernel_versions().values()
 
-        if self._has_checkisomd5():
+        index = "0"
+        for version in versions:
+            self.__copy_kernel_and_initramfs(isodir + "/boot/" , version, index)
+
             cfg += self.__get_image_stanza(fslabel = self.fslabel,
                                            isofstype = "auto",
-                                           short = "rd.live.check",
-                                           long = "Verify and run from image",
-                                           extra = "rd.live.check",
-                                           bit = bit,
+                                           short = "linux",
+                                           long = "Kernel %(version)s",
+                                           extra = "",
                                            liveargs = kernel_options,
-                                           isDracut = isDracut)
+                                           index = index)
 
-        f = open(isodir + "/ppc/ppc" + bit + "/yaboot.conf", "w")
+            index = str(int(index) + 1)
+
+        f = open(isodir + "/boot"  + "/boot.cfg", "w")
         f.write(cfg)
         f.close()
 
-    def __write_not_supported(self, isodir, bit):
-        makedirs(isodir + "/ppc/ppc" + bit)
-
-        message = "Sorry, this LiveCD does not support your hardware"
-
-        f = open(isodir + "/ppc/ppc" + bit + "/yaboot.conf", "w")
-        f.write('init-message = "' + message + '"')
-        f.close()
-
-
-    def __write_dualbits_yaboot_config(isodir, **args):
-        cfg = """
-init-message = "\nWelcome to %(name)s!\nUse 'linux32' for 32-bit kernel.\n\n"
-timeout=%(timeout)d
-default=linux
-
-image=/ppc/ppc64/vmlinuz
-	label=linux64
-	alias=linux
-	initrd=/ppc/ppc64/initrd.img
-	read-only
-
-image=/ppc/ppc32/vmlinuz
-	label=linux32
-	initrd=/ppc/ppc32/initrd.img
-	read-only
-""" % args
-
-        f = open(isodir + "/etc/yaboot.conf", "w")
-        f.write(cfg)
-        f.close()
 
     def _configure_bootloader(self, isodir):
         """configure the boot loader"""
-        havekernel = { 32: False, 64: False }
 
-        self.__copy_boot_file(isodir + "/ppc", "mapping")
-        self.__copy_boot_file(isodir + "/ppc", "bootinfo.txt")
-        self.__copy_boot_file(isodir + "/ppc/mac", "ofboot.b")
+        self.__write_pmon_config(isodir)
 
-        shutil.copyfile(self._instroot + "/usr/lib/yaboot/yaboot",
-                        isodir + "/ppc/mac/yaboot")
+    def _create_bootconfig(self):
+        """Configure the image so that it's bootable."""
+        self._configure_bootloader(self.__ensure_isodir())
 
-        makedirs(isodir + "/ppc/chrp")
-        shutil.copyfile(self._instroot + "/usr/lib/yaboot/yaboot",
-                        isodir + "/ppc/chrp/yaboot")
+    def __ensure_isodir(self):
+        if self.__isodir is None:
+            self.__isodir = self._mkdtemp("iso-")
+        return self.__isodir
 
-        subprocess.call(["/usr/sbin/addnote", isodir + "/ppc/chrp/yaboot"])
+    def __create_img(self, isodir):
+        liveimgdir = self._mkdtemp()
+        liveimg = ExtDiskMount(SparseLoopbackDisk(liveimgdir + "/" + self.name + ".img",
+                                                  self.__image_size),
+                               self._instroot,
+                               self.__fstype,
+                               self.__blocksize,
+                               self.fslabel,
+                               self.tmpdir)
+    def _mount_instroot(self, base_on = None):
+#        pass
+        self.base_on = True
+        LoopImageCreator._mount_instroot(self, base_on)
+        self.__mount_isoroot()
 
-        #
-        # FIXME: ppc should support multiple kernels too...
-        #
-        kernel = self._get_kernel_versions().values()[0][0]
+    def __mount_isoroot( self ):
+        liveimg = self._outdir + "/" + self.name + ".img"
+        self.__liveloop = ExtDiskMount(SparseLoopbackDisk(liveimg,
+                                                  4096L * 1024 * 1024),
+                               self.__ensure_isodir(),
+                               "ext3",
+                               4096,
+                               self.fslabel,
+                               self.tmpdir)
+        try:
+            self.__liveloop.mount()
+        except MountError, e:
+            raise CreatorError("Failed to loopback mount '%s' : %s" %
+                               (liveimg, e))
 
-        kernel_bits = self.__kernel_bits(kernel)
 
-        for (bit, present) in kernel_bits.items():
-            if not present:
-                self.__write_not_supported(isodir, bit)
-                continue
+    def _unmount_instroot(self):
+#        pass
+        LoopImageCreator._unmount_instroot(self)
+        self.__unmount_isoroot()
 
-            isDracut = self.__copy_kernel_and_initramfs(isodir + "/ppc/ppc" + bit, kernel)
-            self.__write_yaboot_config(isodir, bit, isDracut)
+    def __unmount_isoroot(self):
+        if not self.__liveloop is None:
+            self.__liveloop.cleanup()
 
-        makedirs(isodir + "/etc")
-        if kernel_bits["32"] and not kernel_bits["64"]:
-            shutil.copyfile(isodir + "/ppc/ppc32/yaboot.conf",
-                            isodir + "/etc/yaboot.conf")
-        elif kernel_bits["64"] and not kernel_bits["32"]:
-            shutil.copyfile(isodir + "/ppc/ppc64/yaboot.conf",
-                            isodir + "/etc/yaboot.conf")
-        else:
-            self.__write_dualbits_yaboot_config(isodir,
-                                                name = self.name,
-                                                timeout = self._timeout * 100)
+    def _stage_final_image(self):
+        try:
+            makedirs(self.__ensure_isodir() + "/live")
+
+            self._resparse()
+
+            if not self.skip_minimize:
+                pass
+
+            if self.skip_compression:
+                shutil.move(self._image, self.__isodir + "/live/filesystem.ext3")
+                if os.stat(self.__isodir + "/live/filesystem.ext3").st_size >= 4*1024*1024*1024:
+                    self._isofstype = "udf"
+                    logging.warn("Switching to UDF due to size of live/filesystem.ext3")
+            else:
+                instloop = DiskMount( LoopbackDisk(self._image,0), self._instroot)
+                instloop.mount()
+                mksquashfs(self._instroot,
+                           self.__isodir + "/live/filesystem.squashfs",
+                           self.compress_type)
+                if os.stat(self.__isodir + "/live/filesystem.squashfs").st_size >= 4*1024*1024*1024:
+                    self._isofstype = "udf"
+                    logging.warn("Switching to UDF due to size of live/filesystem.squashfs")
+                instloop.cleanup()
+            
+
+        finally:
+            shutil.rmtree(self.__isodir, ignore_errors = True)
+            self.__isodir = None
+
 
 
 def LiveImageCreator(arch):
