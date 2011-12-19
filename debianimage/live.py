@@ -30,6 +30,21 @@ from imgcreate.live import *
 from debianimage.aptinst import *
 from debianimage import kickstart
 
+def mksquashfs(in_img, out_img, compress_type):
+# Allow gzip to work for older versions of mksquashfs
+    if compress_type == "gzip":
+        args = ["/usr/bin/mksquashfs", in_img, out_img]
+    else:
+        args = ["/usr/bin/mksquashfs", in_img, out_img, "-comp", compress_type]
+
+    if not sys.stdout.isatty():
+        args.append("-no-progress")
+
+    ret = call(args)
+    if ret != 0:
+        raise SquashfsError("'%s' exited with error (%d)" %
+                            (string.join(args, " "), ret))
+
 class DebLiveImageCreatorBase(LiveImageCreatorBase):
     """A base class for LiveCD image creators.
 
@@ -729,8 +744,8 @@ class mipsDebLiveImageCreator(DebLiveImageCreatorBase):
         initrd_cmd = ["/usr/sbin/update-initramfs","-c","-t","-k",version]
         subprocess.call(initrd_cmd, preexec_fn = self._chroot)
 
-        if os.path.exists(bootdir + "initrd.img" + version):
-            shutil.copyfile(bootdir + "initrd.img" + version,
+        if os.path.exists(bootdir + "/initrd.img-" + version):
+            shutil.copyfile(bootdir + "/initrd.img-" + version,
                             destdir + "initrd" + index + ".img")
         
 
@@ -777,7 +792,7 @@ title  %(long)s
 
             index = str(int(index) + 1)
 
-        f = open(isodir + "/boot"  + "/boot.cfg", "w")
+        f = open(isodir  + "/boot.cfg", "w")
         f.write(cfg)
         f.close()
 
@@ -796,15 +811,6 @@ title  %(long)s
             self.__isodir = self._mkdtemp("iso-")
         return self.__isodir
 
-    def __create_img(self, isodir):
-        liveimgdir = self._mkdtemp()
-        liveimg = ExtDiskMount(SparseLoopbackDisk(liveimgdir + "/" + self.name + ".img",
-                                                  self.__image_size),
-                               self._instroot,
-                               self.__fstype,
-                               self.__blocksize,
-                               self.fslabel,
-                               self.tmpdir)
     def _mount_instroot(self, base_on = None):
 #        pass
         self.base_on = True
@@ -814,7 +820,7 @@ title  %(long)s
     def __mount_isoroot( self ):
         liveimg = self._outdir + "/" + self.name + ".img"
         self.__liveloop = ExtDiskMount(SparseLoopbackDisk(liveimg,
-                                                  4096L * 1024 * 1024),
+                                                  2048L * 1024 * 1024),
                                self.__ensure_isodir(),
                                "ext3",
                                4096,
