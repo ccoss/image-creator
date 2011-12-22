@@ -24,4 +24,5 @@ install:
 	done 
 	install -D tools/livecd-creator $(DESTDIR)/usr/sbin/livecd-creator
 	install -D tools/appliance-creator $(DESTDIR)/usr/sbin/appliance-creator
+	install -D tools/installer-creator $(DESTDIR)/usr/sbin/installer-creator
 	
