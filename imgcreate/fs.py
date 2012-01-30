@@ -15,6 +15,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+#Changed by Jeff Yang at 2012.01.16
 
 import os
 import os.path
@@ -36,6 +37,7 @@ def makedirs(dirname):
     exception if the leaf directory already exists.
     """
     try:
+        print "mkdir: %s" % dirname
         os.makedirs(dirname)
     except OSError, e:
         if e.errno != errno.EEXIST:
@@ -105,7 +107,7 @@ def resize2fs(fs, size = None, minimal = False, tmpdir = "/tmp"):
 
     ret = e2fsck(fs)
     if ret != 0:
-        raise ResizeError("fsck after resize returned an error (%d)!", (ret,))
+        raise ResizeError("fsck after resize returned an error (%d)!" %  (ret,))
 
     return 0
 
@@ -130,6 +132,7 @@ class BindChrootMount:
             return
 
         makedirs(self.dest)
+        print "BindChrootMount: %s to %s %s" % (self.src, self.dest, str(self))
         rc = call(["/bin/mount", "--bind", self.src, self.dest])
         if rc != 0:
             raise MountError("Bind-mounting '%s' to '%s' failed" %
@@ -139,10 +142,25 @@ class BindChrootMount:
     def unmount(self):
         if not self.mounted:
             return
+        rc = 1
+#####################################################################################
+        print "BindUnmount: %s" % self.dest
+        import time
+        for s in xrange(30):
+            #print "Unable to unmount %s normally " % self.dest
+            print 'sleep.......'
+            time.sleep(1)
+            if not getattr( self, 'dest', None):
+                self.mounted = False
+                return
+            rc = call(["/bin/umount", self.dest])
+            if rc != 0:
+                logging.info("Unable to unmount %s normally, using lazy unmount" % self.dest)
+            else:
+               break
+#####################################################################################
 
-        rc = call(["/bin/umount", self.dest])
         if rc != 0:
-            logging.info("Unable to unmount %s normally, using lazy unmount" % self.dest)
             rc = call(["/bin/umount", "-l", self.dest])
             if rc != 0:
                 raise MountError("Unable to unmount fs at %s" % self.dest)
@@ -162,9 +180,11 @@ class LoopbackMount:
         self.diskmount.cleanup()
 
     def unmount(self):
+        print "LoopbackUnmount>>"
         self.diskmount.unmount()
 
     def lounsetup(self):
+        print "Loopback unsetup %s" % self.loopdev
         if self.losetup:
             rc = call(["/sbin/losetup", "-d", self.loopdev])
             self.losetup = False
@@ -183,7 +203,7 @@ class LoopbackMount:
                              self.lofile)
 
         self.loopdev = losetupOutput.split()[0]
-
+        print "Loopback setup %s" % self.loopdev 
         rc = call(["/sbin/losetup", self.loopdev, self.lofile])
         if rc != 0:
             raise MountError("Failed to allocate loop device for '%s'" %
@@ -192,6 +212,7 @@ class LoopbackMount:
         self.losetup = True
 
     def mount(self):
+        print "LoopbackMount>>"
         self.diskmount.mount()
 
 class SparseLoopbackMount(LoopbackMount):
@@ -308,6 +329,7 @@ class LoopbackDisk(Disk):
         device = losetupOutput.split()[0]
 
         logging.info("Losetup add %s mapping to %s"  % (device, self.lofile))
+        print "Losetup add %s mapping to %s"  % (device, self.lofile)
         rc = call(["/sbin/losetup", device, self.lofile])
         if rc != 0:
             raise MountError("Failed to allocate loop device for '%s'" %
@@ -390,21 +412,40 @@ class DiskMount(Mount):
         self.disk.cleanup()
 
     def unmount(self):
+        print "DiskUnmount %s" % self.mountdir
         if self.mounted:
+            print "BindUnmount: %s" % str(self)
             logging.info("Unmounting directory %s" % self.mountdir)
             rc = call(["/bin/umount", self.mountdir])
             if rc == 0:
                 self.mounted = False
             else:
-                logging.warn("Unmounting directory %s failed, using lazy umount" % self.mountdir)
-                print >> sys.stdout, "Unmounting directory %s failed, using lazy umount" %self.mountdir
-                rc = call(["/bin/umount", "-l", self.mountdir])
-                if rc != 0:
-                    raise MountError("Unable to unmount filesystem at %s" % self.mountdir)
-                else:
-                    logging.info("lazy umount succeeded on %s" % self.mountdir)
-                    print >> sys.stdout, "lazy umount succeeded on %s" % self.mountdir
-                    self.mounted = False
+#####################################################################################
+                import time
+                for s in xrange(30):
+                    #print "Unable to unmount %s normally" % self.dest
+                    print 'sleep ....'
+                    time.sleep(1)
+                    if not getattr( self, 'dest', None):
+                        self.mounted = False
+                        return
+                    rc = call(["/bin/umount", self.dest])
+                    if rc != 0:
+                        logging.info("Unable to unmount %s normally" % self.dest)
+                    else:
+                        self.mounted = False
+                        break
+#####################################################################################
+                if not self.mounted:
+                    logging.warn("Unmounting directory %s failed, using lazy umount" % self.mountdir)
+                    print >> sys.stdout, "Unmounting directory %s failed, using lazy umount" %self.mountdir
+                    rc = call(["/bin/umount", "-l", self.mountdir])
+                    if rc != 0:
+                        raise MountError("Unable to unmount filesystem at %s" % self.mountdir)
+                    else:
+                        logging.info("lazy umount succeeded on %s" % self.mountdir)
+                        print >> sys.stdout, "lazy umount succeeded on %s" % self.mountdir
+                        self.mounted = False
 
         if self.rmdir and not self.mounted:
             try:
@@ -424,12 +465,14 @@ class DiskMount(Mount):
 
         if not os.path.isdir(self.mountdir):
             logging.info("Creating mount point %s" % self.mountdir)
+            print "mk mount point dir: %s" % self.mountdir
             os.makedirs(self.mountdir)
             self.rmdir = self.rmmountdir
 
         self.__create()
 
         logging.info("Mounting %s at %s" % (self.disk.device, self.mountdir))
+        print "DiskMounting %s at %s %s" % (self.disk.device, self.mountdir, str(self))
         args = [ "/bin/mount", self.disk.device, self.mountdir ]
         if self.fstype:
             args.extend(["-t", self.fstype])

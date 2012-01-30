@@ -353,6 +353,7 @@ class LiveImageCreatorBase(LoopImageCreator):
         finally:
             shutil.rmtree(self.__isodir, ignore_errors = True)
             self.__isodir = None
+            os.system("losetup -d /dev/loop*")
 
 class x86LiveImageCreator(LiveImageCreatorBase):
     """ImageCreator for x86 machines"""
@@ -967,4 +968,5 @@ elif arch.startswith('arm'):
     LiveImageCreator = LiveImageCreatorBase
 
 else:
-    raise CreatorError("Architecture not supported!")
+    pass
+#    raise CreatorError("Architecture not supported!")
